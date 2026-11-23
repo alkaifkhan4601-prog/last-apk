@@ -25,6 +25,10 @@ class TypingService : Service() {
         const val EXTRA_START_DELAY_SEC = "start_delay_sec"
         const val EXTRA_BEEP = "beep"                  // play a sound when a form is filled
         const val EXTRA_BATCH = "batch"                // fill every text in jobTexts, one after another
+        const val EXTRA_PAUSE_MS = "pause_ms"          // how long a PAUSE_CHAR in the text waits
+
+        /** Not typed: inside a text it means "wait here" (e.g. for a "Saved" popup to appear). */
+        const val PAUSE_CHAR = '\u0001'
         const val ACTION_STOP = "com.example.autotype.STOP"
 
         private const val CHANNEL_ID = "fastfill"
@@ -80,6 +84,7 @@ class TypingService : Service() {
         val intervalSec = intent.getLongExtra(EXTRA_INTERVAL_SEC, 0L)
         val startDelaySec = intent.getLongExtra(EXTRA_START_DELAY_SEC, 0L)
         val beep = intent.getBooleanExtra(EXTRA_BEEP, true)
+        val pauseMs = intent.getLongExtra(EXTRA_PAUSE_MS, 2000L)
 
         running = true
         cancelled = false
@@ -89,9 +94,9 @@ class TypingService : Service() {
         worker = Thread {
             try {
                 if (batch) {
-                    runBatch(texts, keyDelay, startDelaySec, beep)
+                    runBatch(texts, keyDelay, startDelaySec, beep, pauseMs)
                 } else {
-                    runRepeat(texts.firstOrNull().orEmpty(), keyDelay, repeat, intervalSec, startDelaySec, beep)
+                    runRepeat(texts.firstOrNull().orEmpty(), keyDelay, repeat, intervalSec, startDelaySec, beep, pauseMs)
                 }
             } finally {
                 // If Stop was pressed (or the connection dropped) mid-form, freeze the timer
@@ -115,14 +120,14 @@ class TypingService : Service() {
      * The wait ("Wait before starting") is repeated before EVERY form, so the next form
      * can open and you can get ready before typing begins.
      */
-    private fun runBatch(texts: List<String>, keyDelay: Long, waitSec: Long, beep: Boolean) {
+    private fun runBatch(texts: List<String>, keyDelay: Long, waitSec: Long, beep: Boolean, pauseMs: Long) {
         for ((i, text) in texts.withIndex()) {
             if (cancelled) return
             progressCallback?.invoke(i, texts.size)
             if (!sleepSeconds(waitSec, "Form ${i + 1} of ${texts.size} starts in")) return
 
             statusCallback?.invoke("Typing form ${i + 1} of ${texts.size}…")
-            if (!typeOneForm(text, keyDelay)) return
+            if (!typeOneForm(text, keyDelay, pauseMs)) return
 
             // One beep per finished form; two beeps after the very last one.
             if (beep) playBeep(double = i == texts.lastIndex)
@@ -136,7 +141,8 @@ class TypingService : Service() {
         repeat: Int,
         intervalSec: Long,
         startDelaySec: Long,
-        beep: Boolean
+        beep: Boolean,
+        pauseMs: Long
     ) {
         // Give the user time to click into the target text field on the PC/TV.
         if (!sleepSeconds(startDelaySec, "Starting in")) return
@@ -145,7 +151,7 @@ class TypingService : Service() {
         while (!cancelled && (repeat == 0 || round < repeat)) {
             round++
             statusCallback?.invoke("Typing… (round $round)")
-            if (!typeOneForm(text, keyDelay)) return
+            if (!typeOneForm(text, keyDelay, pauseMs)) return
 
             val moreToGo = repeat == 0 || round < repeat
             if (beep) playBeep(double = !moreToGo)
@@ -155,13 +161,18 @@ class TypingService : Service() {
     }
 
     /** Types one form and runs the top-right timer. Returns false if stopped or disconnected. */
-    private fun typeOneForm(text: String, keyDelay: Long): Boolean {
+    private fun typeOneForm(text: String, keyDelay: Long, pauseMs: Long): Boolean {
         // The timer starts here, when the first key of this form is about to be typed.
         lastRoundMs = 0L
         roundStartedAt = SystemClock.elapsedRealtime()
 
         for (c in text) {
             if (cancelled) return false
+            if (c == PAUSE_CHAR) {
+                // e.g. wait for the "Form saved" popup before pressing Space on its OK button
+                if (!sleepMillis(pauseMs)) return false
+                continue
+            }
             if (!HidManager.typeChar(c, keyDelay)) {
                 statusCallback?.invoke("Not connected to the device, typing stopped")
                 return false
@@ -190,6 +201,22 @@ class TypingService : Service() {
         } finally {
             tone?.release()
         }
+    }
+
+    /** Waits in 100 ms steps so Stop reacts quickly. Returns false if cancelled. */
+    private fun sleepMillis(ms: Long): Boolean {
+        var left = ms
+        while (left > 0) {
+            if (cancelled) return false
+            val step = minOf(100L, left)
+            try {
+                Thread.sleep(step)
+            } catch (e: InterruptedException) {
+                return false
+            }
+            left -= step
+        }
+        return !cancelled
     }
 
     /** Sleeps in 1-second steps so Stop reacts quickly. Returns false if cancelled. */

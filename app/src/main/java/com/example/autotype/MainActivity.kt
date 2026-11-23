@@ -41,6 +41,8 @@ class MainActivity : Activity() {
     private lateinit var timerText: TextView
     private lateinit var checkBeep: CheckBox
     private lateinit var checkTabSpace: CheckBox
+    private lateinit var checkConfirmOk: CheckBox
+    private lateinit var inputOkWait: EditText
 
     // In "fill all forms" mode: which form (in the spinner) the run started from.
     private var batchStartIndex = 0
@@ -108,6 +110,15 @@ class MainActivity : Activity() {
 
         // Remember the wait time between runs (e.g. 20 seconds before every form).
         inputStartDelay.setText(settings.getString("start_delay", "5"))
+
+        // "Save Success" popup: wait, then press Space on its OK button.
+        checkConfirmOk = findViewById(R.id.checkConfirmOk)
+        inputOkWait = findViewById(R.id.inputOkWait)
+        checkConfirmOk.isChecked = settings.getBoolean("confirm_ok", false)
+        inputOkWait.setText(settings.getString("ok_wait", "2"))
+        checkConfirmOk.setOnCheckedChangeListener { _, checked ->
+            settings.edit().putBoolean("confirm_ok", checked).apply()
+        }
 
         // "Enter at the end" and "Tab + Space at the end" are alternatives, so only one can be on.
         checkTabSpace = findViewById(R.id.checkTabSpace)
@@ -315,6 +326,7 @@ class MainActivity : Activity() {
 
         getSharedPreferences("settings", MODE_PRIVATE).edit()
             .putString("start_delay", inputStartDelay.text.toString())
+            .putString("ok_wait", inputOkWait.text.toString())
             .apply()
 
         val formMode = findViewById<CheckBox>(R.id.checkFormMode).isChecked
@@ -323,11 +335,15 @@ class MainActivity : Activity() {
 
         // Keys pressed after the last field. Tab moves focus from the last field to the
         // Save button and Space presses it (some forms ignore Enter).
-        val endKeys = when {
+        val saveKeys = when {
             checkTabSpace.isChecked -> "\t "
             enterAtEnd -> "\n"
             else -> ""
         }
+        // Then: wait for the "Save Success" popup and press Space on its OK button.
+        val okKeys = if (checkConfirmOk.isChecked && saveKeys.isNotEmpty()) "${TypingService.PAUSE_CHAR} " else ""
+        val endKeys = saveKeys + okKeys
+        val okWaitMs = ((inputOkWait.text.toString().toDoubleOrNull() ?: 2.0) * 1000).toLong().coerceIn(200L, 30000L)
 
         var singleText = ""
         if (batch) {
@@ -363,6 +379,7 @@ class MainActivity : Activity() {
             putExtra(TypingService.EXTRA_INTERVAL_SEC, inputInterval.text.toString().toLongOrNull() ?: 0L)
             putExtra(TypingService.EXTRA_START_DELAY_SEC, inputStartDelay.text.toString().toLongOrNull() ?: 0L)
             putExtra(TypingService.EXTRA_BEEP, checkBeep.isChecked)
+            putExtra(TypingService.EXTRA_PAUSE_MS, okWaitMs)
         }
         startForegroundService(intent)
     }
